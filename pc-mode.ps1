@@ -1,6 +1,6 @@
 # ================================================================
 # Back to PC Mode
-# Возвращает картинку на монитор, звук на колонки/наушники, гасит Steam.
+# Возвращает картинку и звук на монитор, выходит из Big Picture, оставляя Steam открытым.
 # Запускай руками (ярлык на рабочем столе или хоткей), когда наигрался.
 # ================================================================
 
@@ -29,8 +29,10 @@ if (Test-Path $SoundVolumeView) {
     & $SoundVolumeView /SetDefault $PcAudioName all
 }
 
-Write-Host "PC Mode: закрываю Steam..."
-Stop-Process -Name steam -Force -ErrorAction SilentlyContinue
+Write-Host "PC Mode: выхожу из Steam Big Picture..."
+if (Get-Process -Name steam -ErrorAction SilentlyContinue) {
+    Start-Process "steam://close/bigpicture"
+}
 
 Write-Host "PC Mode: возвращаю balanced power plan..."
 powercfg /setactive SCHEME_BALANCED
