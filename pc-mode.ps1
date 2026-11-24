@@ -1,6 +1,6 @@
 # ================================================================
 # Back to PC Mode
-# Возвращает картинку и звук на монитор, выходит из Big Picture, оставляя Steam открытым.
+# Возвращает конфигурацию экранов и звук, выходит из Big Picture, оставляя Steam открытым.
 # Запускай руками (ярлык на рабочем столе или хоткей), когда наигрался.
 # ================================================================
 
@@ -18,11 +18,13 @@ New-Item -ItemType File -Path $PcModeMarker -Force | Out-Null
 $PcAudioName = "Realtek"
 
 $SoundVolumeView = "C:\Tools\SoundVolumeView.exe"
+$MultiMonitorTool = "C:\Tools\MultiMonitorTool.exe"
 
 # -----------------------------------------------------------------
 
-Write-Host "PC Mode: переключаю дисплей обратно на монитор..."
-& "$env:WINDIR\System32\DisplaySwitch.exe" /internal
+. (Join-Path $PSScriptRoot "display-mode.ps1")
+Write-Host "PC Mode: восстанавливаю конфигурацию дисплеев..."
+$null = Restore-PcDisplayConfiguration -ToolPath $MultiMonitorTool -StateDirectory $StateDirectory
 
 Write-Host "PC Mode: переключаю звук на $PcAudioName..."
 if (Test-Path $SoundVolumeView) {
