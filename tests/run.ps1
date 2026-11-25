@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 $temp = Join-Path ([IO.Path]::GetTempPath()) ("steam mode tests " + [guid]::NewGuid())
 $oldAppData = $env:LOCALAPPDATA
@@ -25,7 +25,7 @@ try {
         Id = 'DISPLAY\TV\01'; Reads = 0; CancelOnWait = $false
         Scheme = 'e22d939c-32dc-4383-8985-cf936ff97268'
         High = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'; Calls = [Collections.Generic.List[string]]::new()
-        Temp = $temp
+        Temp = $temp; Seconds = 0; Active = @('pc1', 'pc2')
     }
     New-Item -ItemType File (Join-Path $temp 'SoundVolumeView.exe') | Out-Null
     Set-Content (Join-Path $temp 'tv-display.id') $fixture.Id
@@ -36,14 +36,14 @@ try {
     $fixture.CancelOnWait = $true
     & $tv
     Assert-True ($fixture.Reads -ge 1) 'TV did not query for a monitor'
-    Assert-True ($fixture.Calls.Contains('/internal')) 'PC request was not applied while TV was waiting'
-    Assert-True (-not $fixture.Calls.Contains('/external')) 'Unrelated monitor or canceled request activated TV'
+    Assert-True ($fixture.Audio -eq 'id-Realtek') 'PC request was not applied while TV was waiting'
+    Assert-True (-not $fixture.Calls.Contains('/enable')) 'Unrelated monitor or canceled request activated TV'
     Assert-True (-not $fixture.Calls.Contains('steam://open/bigpicture')) 'Canceled TV request opened Steam'
     Assert-True ($fixture.Scheme -eq $original) 'Standalone PC request changed the power scheme'
     $fixture.CancelOnWait = $false
     $fixture.Calls.Clear()
     & $tv
-    Assert-True ($fixture.Scheme -eq $fixture.High -and $fixture.Calls.Contains('/external')) 'TV did not activate display and power'
+    Assert-True ($fixture.Scheme -eq $fixture.High -and $fixture.Calls.Contains('/enable')) 'TV did not activate display and power'
     Assert-True ($fixture.Calls.Contains('steam://open/bigpicture')) 'TV did not open Big Picture'
     $listenerFile = Join-Path $temp 'steam-tv-mode/listener'
     $firstListener = [IO.File]::ReadAllText($listenerFile)
@@ -53,14 +53,14 @@ try {
     Assert-True ($fixture.Calls.Count -eq 0 -and $fixture.Scheme -eq $fixture.High) 'An obsolete listener canceled a newer TV session'
     & $pc
     Assert-True ($fixture.Scheme -eq $original) 'Repeated TV activation overwrote the previous power scheme'
-    Assert-True ($fixture.Calls.Contains('/internal')) 'PC did not restore display'
+    Assert-True (($fixture.Active -join ',') -eq 'pc1,pc2' -and $fixture.Calls.Contains('/LoadConfig')) 'PC did not restore both displays'
     # An unintended output topology must switch straight back to PC before touching audio or Steam.
     $fixture.WrongTopology = $true
     $fixture.Reads = 0
     $fixture.Calls.Clear()
     & $tv
     Assert-True ($LASTEXITCODE -eq 1) 'Unexpected external topology was reported as success'
-    Assert-True ($fixture.Calls.Contains('/internal') -and $fixture.Calls.Contains('/external')) 'Wrong output was not rolled back'
+    Assert-True ($fixture.Calls.Contains('/LoadConfig') -and $fixture.Calls.Contains('/enable')) 'Wrong output was not rolled back'
     Assert-True (-not (Test-Path -LiteralPath $listenerFile)) 'Listener still active after fallback to PC'
     Assert-True (-not $fixture.Calls.Contains('steam://open/bigpicture')) 'Steam opened on the wrong monitor'
     $fixture.WrongTopology = $false

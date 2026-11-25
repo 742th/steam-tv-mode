@@ -26,7 +26,6 @@ function New-ModeRequest([string]$Mode, [string]$ExpectedListener) {
         if ($ExpectedListener -and -not (Test-Listener $ExpectedListener)) { return }
         $token = "$Mode-$([guid]::NewGuid())"
         [IO.File]::WriteAllText($RequestFile, $token)
-        if ($Mode -eq 'PC') { [IO.File]::Delete($ListenerFile) }
         $token
     }
 }
@@ -47,13 +46,11 @@ function Invoke-ModeNative([string]$Program, [string[]]$Arguments) {
     $output.Trim()
 }
 
-function Set-ModeDisplay([string]$Mode) {
-    $null = Invoke-ModeNative "$env:WINDIR\System32\DisplaySwitch.exe" @("/$Mode")
-    Write-ModeLog "DisplaySwitch /$Mode"
-}
-
-function Get-TvMonitors {
-    Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID
+. (Join-Path $PSScriptRoot 'display-mode.ps1')
+$MultiMonitorTool = Join-Path $PSScriptRoot 'MultiMonitorTool.exe'
+function Get-ConfiguredMonitorId {
+    $path = Join-Path $PSScriptRoot 'tv-display.id'
+    if ([IO.File]::Exists($path)) { [IO.File]::ReadAllText($path).Trim() }
 }
 
 function Set-ModeAudio([string]$Name) {

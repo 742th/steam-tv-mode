@@ -12,7 +12,12 @@ try {
         # При отказе одного шага продолжаем восстанавливать остальные настройки.
         $failures = @()
         foreach ($step in @(
-            { Set-ModeDisplay internal }
+            {
+                if (-not (Restore-PcDisplayConfiguration -ToolPath $MultiMonitorTool -StateDirectory $StateDirectory -MonitorId (Get-ConfiguredMonitorId))) {
+                    throw 'Не удалось восстановить раскладку мониторов.'
+                }
+                [IO.File]::Delete($ListenerFile)
+            }
             { Set-ModeAudio $PcAudioName }
             {
                 if (Get-Process -Name steam -ErrorAction SilentlyContinue) {

@@ -5,17 +5,8 @@ $TvDetectTimeoutSeconds = 120
 . (Join-Path $PSScriptRoot 'mode-common.ps1')
 try {
     $request = New-ModeRequest TV
-    $displayId = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tv-display.id')).Trim()
-    if (-not $displayId) { throw 'Укажите телевизор с помощью install-task.ps1.' }
-    Write-ModeLog "TV Mode: ожидаю $displayId."
-    $deadline = (Get-Date).AddSeconds($TvDetectTimeoutSeconds)
-    do {
-        if (-not (Test-ModeRequest $request)) { return }
-        $tv = Get-TvMonitors | Where-Object { $_.InstanceName -eq $displayId }
-        if ($tv) { break }
-        if ((Get-Date) -ge $deadline) { throw "Телевизор не обнаружен за $TvDetectTimeoutSeconds с." }
-        Start-Sleep -Seconds 2
-    } while ($true)
+    $tv = Find-TvMonitor -ToolPath $MultiMonitorTool -TvDisplayName $TvDisplayName -MonitorId (Get-ConfiguredMonitorId) -TimeoutSeconds $TvDetectTimeoutSeconds -RequestToken $request
+    if (-not $tv) { return }
 
     Invoke-ModeLock {
         if (-not (Test-ModeRequest $request)) { return }
@@ -23,17 +14,11 @@ try {
         Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$listener`" $request"
         [IO.File]::WriteAllText($ListenerFile, $request)
         try {
-            Set-ModeDisplay external
-            $deadline = (Get-Date).AddSeconds(10)
-            do {
-                $active = @(Get-TvMonitors | Where-Object { $_.Active })
-                if ($active.Count -eq 1 -and $active[0].InstanceName -eq $displayId) { break }
-                if ((Get-Date) -ge $deadline) { throw 'Windows активировала другой дисплей.' }
-                Start-Sleep -Milliseconds 500
-            } while ($true)
+            if (-not (Set-TvDisplayConfiguration -ToolPath $MultiMonitorTool -TvMonitor $tv -StateDirectory $StateDirectory)) {
+                throw 'Не удалось включить только выбранный телевизор.'
+            }
         } catch {
-            Set-ModeDisplay internal
-            [IO.File]::Delete($ListenerFile)
+            if (-not (Test-Path (Join-Path $StateDirectory 'pc-displays.cfg'))) { [IO.File]::Delete($ListenerFile) }
             throw
         }
         Set-ModeAudio $TvAudioName

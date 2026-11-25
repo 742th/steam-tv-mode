@@ -20,7 +20,8 @@ public static class SteamTvModeHotkeyNative
                 ([SteamTvModeHotkeyNative]::GetAsyncKeyState(0x12) -lt 0) -and
                 ([SteamTvModeHotkeyNative]::GetAsyncKeyState(0x50) -lt 0)) {
                 & $pcMode -ExpectedListener $ListenerToken
-                exit $LASTEXITCODE
+                while ([SteamTvModeHotkeyNative]::GetAsyncKeyState(0x50) -lt 0) { Start-Sleep -Milliseconds 50 }
+                break
             }
             Start-Sleep -Milliseconds 50
         }

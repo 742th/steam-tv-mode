@@ -7,8 +7,8 @@ $idFile = Join-Path $folder 'tv-display.id'
 $tvId = 'DISPLAY\TV\01'
 $registered = [Collections.ArrayList]::new()
 
-function Get-CimInstance {
-    [pscustomobject]@{ Active = $true; InstanceName = $tvId; UserFriendlyName = [char[]]'TV' }
+function Get-MonitorRows {
+    [pscustomobject]@{ Disconnected = 'No'; 'Monitor ID' = $tvId; 'Monitor Name' = 'TV' }
 }
 function New-ScheduledTaskAction { param($Execute, $Argument); $PSBoundParameters }
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User); $PSBoundParameters }
@@ -30,7 +30,7 @@ try {
     if ($LASTEXITCODE -ne 1 -or (Test-Path $idFile)) { throw 'Incomplete installation was accepted' }
 
     if ([Environment]::OSVersion.Platform -eq 'Win32NT') {
-        foreach ($name in 'tv-mode.ps1','pc-mode.ps1','mode-common.ps1','hotkey-listener.ps1','SoundVolumeView.exe') {
+        foreach ($name in 'tv-mode.ps1','pc-mode.ps1','mode-common.ps1','hotkey-listener.ps1','SoundVolumeView.exe','MultiMonitorTool.exe','display-mode.ps1') {
             [IO.File]::WriteAllText((Join-Path $folder $name), '')
         }
         & $installer -TvDisplayId 'DISPLAY\OTHER' 2>$null
