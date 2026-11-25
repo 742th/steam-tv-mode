@@ -1,5 +1,9 @@
-﻿param([string]$ExpectedListener)
+﻿# Возвращает рабочие мониторы, звук и план питания. Steam остаётся открытым.
+# Запускается ярлыком или по Ctrl+Alt+P во время игры.
+param([string]$ExpectedListener)
 
+# Настройки звука на ПК
+# Выбери в SoundVolumeView колонки или наушники, на которые должен вернуться звук.
 # Имя или Item ID устройства воспроизведения в SoundVolumeView.
 $PcAudioName = "Realtek"
 

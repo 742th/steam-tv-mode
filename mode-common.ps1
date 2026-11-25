@@ -6,6 +6,8 @@ $PowerPlanFile = Join-Path $StateDirectory 'original-power-scheme'
 $ListenerFile = Join-Path $StateDirectory 'listener'
 $LogFile = Join-Path $StateDirectory 'mode.log'
 
+# Автозапуск, ярлык и горячая клавиша могут сработать одновременно.
+# Эта блокировка даёт одному скрипту закончить переключение, прежде чем начнёт другой.
 function Invoke-ModeLock([scriptblock]$Action) {
     $mutex = [Threading.Mutex]::new($false, 'Local\SteamTvModeTransition')
     try {
@@ -56,6 +58,7 @@ function Get-ConfiguredMonitorId {
 function Set-ModeAudio([string]$Name) {
     $tool = Join-Path $PSScriptRoot 'SoundVolumeView.exe'
     if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Не найден $tool" }
+    # После смены экрана HDMI-звук может появиться чуть позже изображения.
     $deadline = (Get-Date).AddSeconds(5)
     do {
         $device = Invoke-ModeNative $tool @('/GetColumnValue', $Name, 'Item ID')
@@ -73,6 +76,7 @@ function Set-ModeAudio([string]$Name) {
 }
 
 function Enable-TvPowerPlan {
+    # Запоминаем исходный план только при первом входе. Повторный запуск TV Mode должен его сохранить.
     if (-not [IO.File]::Exists($PowerPlanFile)) {
         $current = Invoke-ModeNative powercfg.exe @('/getactivescheme')
         if ($current -notmatch '[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}') {

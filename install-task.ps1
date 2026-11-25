@@ -1,4 +1,6 @@
-﻿[CmdletBinding()]
+﻿# Запусти при установке или обновлении из обычного PowerShell под пользователем Steam.
+# Скрипт запоминает выбранный телевизор и настраивает запуск TV Mode при входе в Windows.
+[CmdletBinding()]
 param(
     [ValidateNotNullOrEmpty()]
     [string]$TvDisplayId
@@ -48,6 +50,7 @@ try {
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
+    # Сохраняем прежний выбор ТВ на случай, если Планировщик отклонит новую задачу.
     $idPath = Join-Path $PSScriptRoot 'tv-display.id'
     $oldId = $null
     if ([IO.File]::Exists($idPath)) {

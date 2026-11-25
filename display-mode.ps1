@@ -230,6 +230,7 @@ function Get-DisplaySnapshot {
     }
 }
 
+# Перед игрой сохраняем расположение рабочих мониторов и отмечаем, какой экран основной.
 function Save-PcDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
@@ -282,6 +283,8 @@ function Save-PcDisplayConfiguration {
     }
 }
 
+# Загружаем раскладку и сверяем её с исходной. Если экраны ещё не вернулись на свои места,
+# сохранённые файлы понадобятся для следующей попытки.
 function Restore-SavedDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
@@ -337,6 +340,7 @@ function Set-TvDisplayConfiguration {
             throw "Телевизор не появился среди активных дисплеев."
         }
 
+        # Телевизор уже показывает изображение. Теперь можно отключить остальные экраны.
         $OtherMonitorIds = @($InitialRecords | Where-Object { $_.MonitorId -ne $TvMonitor.MonitorId } | ForEach-Object { $_.MonitorId } | Sort-Object -Unique)
         if ($OtherMonitorIds.Count -gt 0) {
             $DisableArguments = @("/disable") + $OtherMonitorIds
