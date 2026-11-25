@@ -1,4 +1,4 @@
-# Глобальная горячая клавиша возврата из TV Mode в PC Mode.
+﻿# Глобальная горячая клавиша возврата из TV Mode в PC Mode.
 
 $StateDirectory = Join-Path $env:LOCALAPPDATA "steam-tv-mode"
 $PcModeMarker = Join-Path $StateDirectory "pc-mode.active"
@@ -36,8 +36,7 @@ public static class SteamTvModeHotkeyNative
 
         if ($IsPressed -and -not $WasPressed) {
             $Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PcModeScript`""
-            Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList $Arguments
-            break
+            Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList $Arguments -Wait
         }
 
         $WasPressed = $IsPressed
