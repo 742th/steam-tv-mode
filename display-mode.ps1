@@ -1,3 +1,6 @@
+﻿# Уникальная часть Monitor Name телевизора в MultiMonitorTool.
+$TvDisplayName = "Samsung"
+
 function Invoke-MultiMonitorTool {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
@@ -8,16 +11,16 @@ function Invoke-MultiMonitorTool {
         throw "MultiMonitorTool не найден: $ToolPath"
     }
 
-    & $ToolPath @Arguments
+    & $ToolPath @Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "MultiMonitorTool завершился с кодом $LASTEXITCODE."
     }
 }
 
-function Get-ActiveMonitorRecords {
+function Get-MonitorRows {
     param([Parameter(Mandatory = $true)][string]$ToolPath)
 
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+
 
     $CsvPath = Join-Path ([System.IO.Path]::GetTempPath()) ("tv-mode-monitors-" + [guid]::NewGuid().ToString("N") + ".csv")
     try {
@@ -38,33 +41,43 @@ function Get-ActiveMonitorRecords {
             }
         }
 
-        $Screens = @([System.Windows.Forms.Screen]::AllScreens)
-        $PrimaryDeviceName = [System.Windows.Forms.Screen]::PrimaryScreen.DeviceName
-        $ActiveRecords = @()
-
-        foreach ($Screen in $Screens) {
-            $MatchingRows = @($Rows | Where-Object { $_.Name -ieq $Screen.DeviceName })
-            if ($MatchingRows.Count -ne 1) {
-                throw "Не удалось однозначно сопоставить активный экран '$($Screen.DeviceName)' с MultiMonitorTool."
-            }
-
-            $MonitorId = [string]$MatchingRows[0].'Monitor ID'
-            if ([string]::IsNullOrWhiteSpace($MonitorId)) {
-                throw "Для активного экрана '$($Screen.DeviceName)' MultiMonitorTool не вернул Monitor ID."
-            }
-
-            $ActiveRecords += [pscustomobject]@{
-                DisplayName = [string]$Screen.DeviceName
-                MonitorName = [string]$MatchingRows[0].'Monitor Name'
-                MonitorId = $MonitorId
-                IsPrimary = ($Screen.DeviceName -ieq $PrimaryDeviceName)
-            }
-        }
-
-        return $ActiveRecords
+        return $Rows
     } finally {
         Remove-Item -LiteralPath $CsvPath -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Get-ActiveMonitorRecords {
+    param([Parameter(Mandatory = $true)][string]$ToolPath)
+
+    $Rows = @(Get-MonitorRows -ToolPath $ToolPath)
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    $Screens = @([System.Windows.Forms.Screen]::AllScreens)
+    $PrimaryDeviceName = [System.Windows.Forms.Screen]::PrimaryScreen.DeviceName
+    $ActiveRecords = @()
+
+    foreach ($Screen in $Screens) {
+        $MatchingRows = @($Rows | Where-Object { $_.Name -ieq $Screen.DeviceName })
+        if ($MatchingRows.Count -ne 1) {
+            throw "Не удалось однозначно сопоставить активный экран '$($Screen.DeviceName)' с MultiMonitorTool."
+        }
+
+        $MonitorId = [string]$MatchingRows[0].'Monitor ID'
+        if ([string]::IsNullOrWhiteSpace($MonitorId)) {
+            throw "Для активного экрана '$($Screen.DeviceName)' MultiMonitorTool не вернул Monitor ID."
+        }
+
+        $ActiveRecords += [pscustomobject]@{
+            DisplayName = [string]$Screen.DeviceName
+            MonitorName = [string]$MatchingRows[0].'Monitor Name'
+            MonitorId = $MonitorId
+            X = $Screen.Bounds.X
+            Y = $Screen.Bounds.Y
+            IsPrimary = ($Screen.DeviceName -ieq $PrimaryDeviceName)
+        }
+    }
+
+    return $ActiveRecords
 }
 
 function Test-MonitorIdSet {
@@ -89,6 +102,7 @@ function Wait-ForMonitorState {
         [int]$TimeoutSeconds = 15,
         [string[]]$ExpectedMonitorIds,
         [string[]]$RequiredMonitorIds,
+        [object[]]$ExpectedLayout,
         [string]$PrimaryMonitorId
     )
 
@@ -122,6 +136,13 @@ function Wait-ForMonitorState {
                 }
             }
 
+            foreach ($Expected in $ExpectedLayout) {
+                if (@($Records | Where-Object {
+                    $_.MonitorId -eq $Expected.MonitorId -and $_.X -eq $Expected.X -and
+                    $_.Y -eq $Expected.Y -and $_.IsPrimary -eq $Expected.IsPrimary
+                }).Count -ne 1) { $StateMatches = $false }
+            }
+
             if ($StateMatches) {
                 return $Records
             }
@@ -148,17 +169,23 @@ function Find-TvMonitor {
 
     $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        $ActiveRecords = @(Get-ActiveMonitorRecords -ToolPath $ToolPath)
-        $Matches = @($ActiveRecords | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.MonitorName) -and
-            $_.MonitorName.IndexOf($TvDisplayName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        Assert-CurrentModeRequest
+        try {
+            $Rows = @(Get-MonitorRows -ToolPath $ToolPath)
+            $LastReadError = $null
+        } catch {
+            $LastReadError = $_.Exception.Message
+            $Rows = @()
+        }
+        $Matches = @($Rows | Where-Object {
+            $_.'Monitor ID' -and $_.Disconnected -ne 'Yes' -and $_.'Monitor Name' -and
+            $_.'Monitor Name'.IndexOf($TvDisplayName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
         })
-
         if ($Matches.Count -gt 1) {
-            throw "Найдено несколько активных дисплеев с именем '$TvDisplayName'. Укажи более точную часть имени телевизора."
+            throw "Найдено несколько дисплеев с именем '$TvDisplayName'. Укажи более точную часть имени телевизора."
         }
         if ($Matches.Count -eq 1) {
-            return $Matches[0]
+            return [pscustomobject]@{ MonitorId = $Matches[0].'Monitor ID'; MonitorName = $Matches[0].'Monitor Name' }
         }
 
         if ((Get-Date) -lt $Deadline) {
@@ -166,7 +193,7 @@ function Find-TvMonitor {
         }
     } while ((Get-Date) -lt $Deadline)
 
-    throw "Дисплей '$TvDisplayName' не найден за $TimeoutSeconds сек. Проверь Monitor Name в MultiMonitorTool."
+    throw "Дисплей '$TvDisplayName' не найден за $TimeoutSeconds сек. $LastReadError Проверь Monitor Name в MultiMonitorTool."
 }
 
 function Get-DisplaySnapshot {
@@ -195,6 +222,7 @@ function Get-DisplaySnapshot {
         ConfigPath = $ConfigPath
         ManifestPath = $ManifestPath
         ActiveMonitorIds = $MonitorIds
+        Layout = $Manifest.Layout
     }
 }
 
@@ -202,7 +230,7 @@ function Save-PcDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
         [Parameter(Mandatory = $true)][string]$StateDirectory,
-        [Parameter(Mandatory = $true)][string[]]$ActiveMonitorIds
+        [Parameter(Mandatory = $true)][object[]]$Records
     )
 
     if (-not (Test-Path -LiteralPath $StateDirectory -PathType Container)) {
@@ -228,7 +256,7 @@ function Save-PcDisplayConfiguration {
             throw "MultiMonitorTool не сохранил конфигурацию дисплеев."
         }
 
-        $Manifest = [pscustomobject]@{ ActiveMonitorIds = @($ActiveMonitorIds | Sort-Object -Unique) }
+        $Manifest = [pscustomobject]@{ ActiveMonitorIds = @($Records.MonitorId); Layout = @($Records | Select-Object MonitorId, X, Y, IsPrimary) }
         $Manifest | ConvertTo-Json -Compress | Set-Content -LiteralPath $TempManifestPath -Encoding UTF8 -ErrorAction Stop
 
         Move-Item -LiteralPath $TempConfigPath -Destination $ConfigPath -ErrorAction Stop | Out-Null
@@ -264,7 +292,7 @@ function Restore-SavedDisplayConfiguration {
         }
 
         Invoke-MultiMonitorTool -ToolPath $ToolPath -Arguments @("/LoadConfig", $Snapshot.ConfigPath)
-        $RestoredRecords = Wait-ForMonitorState -ToolPath $ToolPath -TimeoutSeconds 15 -ExpectedMonitorIds $Snapshot.ActiveMonitorIds
+        $RestoredRecords = Wait-ForMonitorState -ToolPath $ToolPath -TimeoutSeconds 15 -ExpectedMonitorIds $Snapshot.ActiveMonitorIds -ExpectedLayout $Snapshot.Layout
         if (-not $RestoredRecords) {
             throw "После загрузки снимка активные дисплеи не совпали с исходной конфигурацией."
         }
@@ -294,7 +322,10 @@ function Set-TvDisplayConfiguration {
 
         $Snapshot = Get-DisplaySnapshot -StateDirectory $StateDirectory
         if (-not $Snapshot) {
-            Save-PcDisplayConfiguration -ToolPath $ToolPath -StateDirectory $StateDirectory -ActiveMonitorIds $InitialIds
+            if ($InitialIds -contains $TvMonitor.MonitorId -or $InitialIds.Count -eq 0) {
+                throw "Для первого переключения включи в параметрах Windows только рабочие мониторы. ТВ оставь подключённым."
+            }
+            Save-PcDisplayConfiguration -ToolPath $ToolPath -StateDirectory $StateDirectory -Records $InitialRecords
             $Snapshot = Get-DisplaySnapshot -StateDirectory $StateDirectory
         }
         $SnapshotReady = $true
@@ -348,11 +379,36 @@ function Restore-PcDisplayConfiguration {
         return Restore-SavedDisplayConfiguration -ToolPath $ToolPath -StateDirectory $StateDirectory
     }
 
-    Write-Warning "PC Mode: снимка дисплеев нет; использую legacy-режим /internal, который не гарантирует возврат нескольких внешних мониторов."
-    & "$env:WINDIR\System32\DisplaySwitch.exe" /internal
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "PC Mode: DisplaySwitch /internal завершился с кодом $LASTEXITCODE."
-        return $false
+    $Active = @(Get-ActiveMonitorRecords -ToolPath $ToolPath)
+    if ($Active.Count -gt 0 -and @($Active | Where-Object {
+        [string]::IsNullOrWhiteSpace($_.MonitorName) -or
+        $_.MonitorName.IndexOf($TvDisplayName, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    }).Count -eq 0) { return $true }
+    Write-Warning "Нет сохранённой раскладки. Выбери рабочие мониторы в параметрах экрана Windows."
+    return $false
+}
+
+function Assert-CurrentModeRequest {
+    if ([Microsoft.Win32.Registry]::GetValue($RequestKey, 'Latest', '') -ne $RequestId) {
+        throw "Получена новая команда переключения."
     }
-    return $true
+}
+
+function Invoke-ModeRequest {
+    param([scriptblock]$Action)
+
+    $RequestKey = 'HKEY_CURRENT_USER\Software\SteamTvMode'
+    $RequestId = [guid]::NewGuid().ToString()
+    [Microsoft.Win32.Registry]::SetValue($RequestKey, 'Latest', $RequestId)
+    $Lock = [Threading.Mutex]::new($false, 'Local\SteamTvModeSwitch')
+    $Owned = $false
+    try {
+        try { $Owned = $Lock.WaitOne() }
+        catch [Threading.AbandonedMutexException] { $Owned = $true }
+        Assert-CurrentModeRequest
+        & $Action
+    } finally {
+        if ($Owned) { $Lock.ReleaseMutex() }
+        $Lock.Dispose()
+    }
 }
