@@ -1,45 +1,45 @@
-﻿# ================================================================
-# Back to PC Mode
-# Возвращает конфигурацию экранов и звук, выходит из Big Picture, оставляя Steam открытым.
-# Запускай руками (ярлык на рабочем столе или хоткей), когда наигрался.
-# ================================================================
+﻿# Возвращает рабочие мониторы, звук и план питания. Steam остаётся открытым.
+# Запускается ярлыком или по Ctrl+Alt+P во время игры.
+param([string]$ExpectedListener)
 
-$StateDirectory = Join-Path $env:LOCALAPPDATA "steam-tv-mode"
-if (-not (Test-Path $StateDirectory)) {
-    New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
-}
-$PcModeMarker = Join-Path $StateDirectory "pc-mode.active"
-
-# --- НАСТРОЙКИ ---------------------------------------------------
-
-# Часть имени твоего обычного аудио-устройства (наушники / колонки монитора).
-# Как узнать — так же, как в tv-mode.ps1.
+# Настройки звука на ПК
+# Выбери в SoundVolumeView колонки или наушники, на которые должен вернуться звук.
+# Имя или Item ID устройства воспроизведения в SoundVolumeView.
 $PcAudioName = "Realtek"
 
-$SoundVolumeView = "C:\Tools\SoundVolumeView.exe"
-$MultiMonitorTool = "C:\Tools\MultiMonitorTool.exe"
-
-# -----------------------------------------------------------------
-
-. (Join-Path $PSScriptRoot "display-mode.ps1")
-Invoke-ModeRequest {
-    Write-Host "PC Mode: восстанавливаю конфигурацию дисплеев..."
-    $Restored = Restore-PcDisplayConfiguration -ToolPath $MultiMonitorTool -StateDirectory $StateDirectory
-
-    Write-Host "PC Mode: переключаю звук на $PcAudioName..."
-    if (Test-Path $SoundVolumeView) {
-        & $SoundVolumeView /SetDefault $PcAudioName all
+. (Join-Path $PSScriptRoot 'mode-common.ps1')
+try {
+    $request = New-ModeRequest PC $ExpectedListener
+    if (-not $request) { return }
+    Invoke-ModeLock {
+        if (-not (Test-ModeRequest $request)) { return }
+        # При отказе одного шага продолжаем восстанавливать остальные настройки.
+        $failures = @()
+        foreach ($step in @(
+            {
+                if (-not (Restore-PcDisplayConfiguration -ToolPath $MultiMonitorTool -StateDirectory $StateDirectory -MonitorId (Get-ConfiguredMonitorId))) {
+                    throw 'Не удалось восстановить раскладку мониторов.'
+                }
+                [IO.File]::Delete($ListenerFile)
+            }
+            { Set-ModeAudio $PcAudioName }
+            {
+                if (Get-Process -Name steam -ErrorAction SilentlyContinue) {
+                    Start-Process 'steam://close/bigpicture'
+                    Write-ModeLog 'Запрошен выход из Steam Big Picture.'
+                }
+            }
+            { Restore-PcPowerPlan }
+        )) {
+            try { & $step } catch {
+                $failures += $_.Exception.Message
+                Write-ModeLog "PC Mode: $_"
+            }
+        }
+        if ($failures.Count) { throw ($failures -join '; ') }
+        Write-ModeLog 'PC Mode: готово.'
     }
-
-    Write-Host "PC Mode: выхожу из Steam Big Picture..."
-    if (Get-Process -Name steam -ErrorAction SilentlyContinue) {
-        Start-Process "steam://close/bigpicture"
-    }
-
-    Write-Host "PC Mode: возвращаю balanced power plan..."
-    powercfg /setactive SCHEME_BALANCED
-
-    if (-not $Restored) { throw "PC Mode: восстановление экранов не подтверждено." }
-    New-Item -ItemType File -Path $PcModeMarker -Force | Out-Null
-    Write-Host "PC Mode: готово."
+} catch {
+    Write-ModeLog "PC Mode: ошибка: $_"
+    exit 1
 }

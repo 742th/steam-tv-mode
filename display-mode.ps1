@@ -160,7 +160,9 @@ function Find-TvMonitor {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
         [Parameter(Mandatory = $true)][string]$TvDisplayName,
-        [int]$TimeoutSeconds = 120
+        [int]$TimeoutSeconds = 120,
+        [string]$MonitorId,
+        [string]$RequestToken
     )
 
     if ([string]::IsNullOrWhiteSpace($TvDisplayName)) {
@@ -169,7 +171,7 @@ function Find-TvMonitor {
 
     $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        Assert-CurrentModeRequest
+        if ($RequestToken -and -not (Test-ModeRequest $RequestToken)) { return }
         try {
             $Rows = @(Get-MonitorRows -ToolPath $ToolPath)
             $LastReadError = $null
@@ -178,8 +180,9 @@ function Find-TvMonitor {
             $Rows = @()
         }
         $Matches = @($Rows | Where-Object {
-            $_.'Monitor ID' -and $_.Disconnected -ne 'Yes' -and $_.'Monitor Name' -and
-            $_.'Monitor Name'.IndexOf($TvDisplayName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            if (-not $_.'Monitor ID' -or $_.Disconnected -eq 'Yes') { return $false }
+            if ($MonitorId) { return $_.'Monitor ID' -eq $MonitorId }
+            $_.'Monitor Name' -and $_.'Monitor Name'.IndexOf($TvDisplayName, [StringComparison]::OrdinalIgnoreCase) -ge 0
         })
         if ($Matches.Count -gt 1) {
             throw "Найдено несколько дисплеев с именем '$TvDisplayName'. Укажи более точную часть имени телевизора."
@@ -193,7 +196,8 @@ function Find-TvMonitor {
         }
     } while ((Get-Date) -lt $Deadline)
 
-    throw "Дисплей '$TvDisplayName' не найден за $TimeoutSeconds сек. $LastReadError Проверь Monitor Name в MultiMonitorTool."
+    $target = if ($MonitorId) { $MonitorId } else { $TvDisplayName }
+    throw "Дисплей '$target' не найден за $TimeoutSeconds сек. $LastReadError Проверь Monitor Name в MultiMonitorTool."
 }
 
 function Get-DisplaySnapshot {
@@ -226,6 +230,7 @@ function Get-DisplaySnapshot {
     }
 }
 
+# Перед игрой сохраняем расположение рабочих мониторов и отмечаем, какой экран основной.
 function Save-PcDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
@@ -278,6 +283,8 @@ function Save-PcDisplayConfiguration {
     }
 }
 
+# Загружаем раскладку и сверяем её с исходной. Если экраны ещё не вернулись на свои места,
+# сохранённые файлы понадобятся для следующей попытки.
 function Restore-SavedDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
@@ -309,14 +316,12 @@ function Restore-SavedDisplayConfiguration {
 function Set-TvDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
-        [Parameter(Mandatory = $true)][string]$TvDisplayName,
-        [Parameter(Mandatory = $true)][string]$StateDirectory,
-        [int]$TimeoutSeconds = 120
+        [Parameter(Mandatory = $true)][object]$TvMonitor,
+        [Parameter(Mandatory = $true)][string]$StateDirectory
     )
 
     $SnapshotReady = $false
     try {
-        $TvMonitor = Find-TvMonitor -ToolPath $ToolPath -TvDisplayName $TvDisplayName -TimeoutSeconds $TimeoutSeconds
         $InitialRecords = @(Get-ActiveMonitorRecords -ToolPath $ToolPath)
         $InitialIds = @($InitialRecords | ForEach-Object { $_.MonitorId } | Sort-Object -Unique)
 
@@ -335,6 +340,7 @@ function Set-TvDisplayConfiguration {
             throw "Телевизор не появился среди активных дисплеев."
         }
 
+        # Телевизор уже показывает изображение. Теперь можно отключить остальные экраны.
         $OtherMonitorIds = @($InitialRecords | Where-Object { $_.MonitorId -ne $TvMonitor.MonitorId } | ForEach-Object { $_.MonitorId } | Sort-Object -Unique)
         if ($OtherMonitorIds.Count -gt 0) {
             $DisableArguments = @("/disable") + $OtherMonitorIds
@@ -365,7 +371,8 @@ function Set-TvDisplayConfiguration {
 function Restore-PcDisplayConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolPath,
-        [Parameter(Mandatory = $true)][string]$StateDirectory
+        [Parameter(Mandatory = $true)][string]$StateDirectory,
+        [string]$MonitorId
     )
 
     try {
@@ -381,34 +388,10 @@ function Restore-PcDisplayConfiguration {
 
     $Active = @(Get-ActiveMonitorRecords -ToolPath $ToolPath)
     if ($Active.Count -gt 0 -and @($Active | Where-Object {
+        if ($MonitorId) { return $_.MonitorId -eq $MonitorId }
         [string]::IsNullOrWhiteSpace($_.MonitorName) -or
         $_.MonitorName.IndexOf($TvDisplayName, [StringComparison]::OrdinalIgnoreCase) -ge 0
     }).Count -eq 0) { return $true }
     Write-Warning "Нет сохранённой раскладки. Выбери рабочие мониторы в параметрах экрана Windows."
     return $false
-}
-
-function Assert-CurrentModeRequest {
-    if ([Microsoft.Win32.Registry]::GetValue($RequestKey, 'Latest', '') -ne $RequestId) {
-        throw "Получена новая команда переключения."
-    }
-}
-
-function Invoke-ModeRequest {
-    param([scriptblock]$Action)
-
-    $RequestKey = 'HKEY_CURRENT_USER\Software\SteamTvMode'
-    $RequestId = [guid]::NewGuid().ToString()
-    [Microsoft.Win32.Registry]::SetValue($RequestKey, 'Latest', $RequestId)
-    $Lock = [Threading.Mutex]::new($false, 'Local\SteamTvModeSwitch')
-    $Owned = $false
-    try {
-        try { $Owned = $Lock.WaitOne() }
-        catch [Threading.AbandonedMutexException] { $Owned = $true }
-        Assert-CurrentModeRequest
-        & $Action
-    } finally {
-        if ($Owned) { $Lock.ReleaseMutex() }
-        $Lock.Dispose()
-    }
 }

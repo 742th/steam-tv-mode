@@ -1,60 +1,40 @@
-﻿# ================================================================
-# TV Gaming Mode
-# Переключает картинку и звук на телек, запускает Steam Big Picture.
-# Этот скрипт запускается автоматически при входе в Windows.
-# ================================================================
+﻿# При входе в Windows этот скрипт переключает картинку и звук на ТВ и открывает Steam Big Picture.
 
-$StateDirectory = Join-Path $env:LOCALAPPDATA "steam-tv-mode"
-$PcModeMarker = Join-Path $StateDirectory "pc-mode.active"
-if (-not (Test-Path $StateDirectory)) {
-    New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
-}
-
-# --- НАСТРОЙКИ (поменяй под себя) --------------------------------
-
-# Часть имени аудио-устройства ТВ.
-# Как узнать: правой кнопкой по иконке звука в трее -> "Звуки"
-# -> вкладка "Воспроизведение". Найди устройство телека, скопируй
-# кусок имени (например "Samsung" или "TV" или "AV Receiver").
+# Настройки телевизора
+# В SoundVolumeView найди устройство воспроизведения ТВ и скопируй его Item ID.
+# Имя или Item ID устройства воспроизведения в SoundVolumeView.
 $TvAudioName = "Samsung"
 
-# Путь к SoundVolumeView.exe (см. README, шаг про NirSoft).
-$SoundVolumeView = "C:\Tools\SoundVolumeView.exe"
-
-# Путь к MultiMonitorTool.exe (см. README).
-$MultiMonitorTool = "C:\Tools\MultiMonitorTool.exe"
-
-# Максимум секунд ждать, пока Windows увидит телевизор.
+# Сколько секунд ждать телевизор, если он ещё просыпается.
 $TvDetectTimeoutSeconds = 120
 
-# -----------------------------------------------------------------
+. (Join-Path $PSScriptRoot 'mode-common.ps1')
+try {
+    # Пока ищем телевизор, пользователь может отменить переход, запустив PC Mode.
+    $request = New-ModeRequest TV
+    $tv = Find-TvMonitor -ToolPath $MultiMonitorTool -TvDisplayName $TvDisplayName -MonitorId (Get-ConfiguredMonitorId) -TimeoutSeconds $TvDetectTimeoutSeconds -RequestToken $request
+    if (-not $tv) { return }
 
-. (Join-Path $PSScriptRoot "display-mode.ps1")
-Invoke-ModeRequest {
-    Write-Host "TV Mode: ищу телевизор '$TvDisplayName' в MultiMonitorTool..."
-    if (-not (Set-TvDisplayConfiguration -ToolPath $MultiMonitorTool -TvDisplayName $TvDisplayName -StateDirectory $StateDirectory -TimeoutSeconds $TvDetectTimeoutSeconds)) {
-        throw "TV Mode: переход не выполнен."
+    Invoke-ModeLock {
+        if (-not (Test-ModeRequest $request)) { return }
+        # Заранее включаем Ctrl+Alt+P, чтобы можно было вернуться на ПК даже при ошибке со звуком.
+        $listener = Join-Path $PSScriptRoot 'hotkey-listener.ps1'
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$listener`" $request"
+        [IO.File]::WriteAllText($ListenerFile, $request)
+        try {
+            if (-not (Set-TvDisplayConfiguration -ToolPath $MultiMonitorTool -TvMonitor $tv -StateDirectory $StateDirectory)) {
+                throw 'Не удалось включить только выбранный телевизор.'
+            }
+        } catch {
+            if (-not (Test-Path (Join-Path $StateDirectory 'pc-displays.cfg'))) { [IO.File]::Delete($ListenerFile) }
+            throw
+        }
+        Set-ModeAudio $TvAudioName
+        Enable-TvPowerPlan
+        Start-Process 'steam://open/bigpicture'
+        Write-ModeLog 'TV Mode: запрошен Steam Big Picture. Готово.'
     }
-
-    Remove-Item -LiteralPath $PcModeMarker -Force -ErrorAction SilentlyContinue
-    Assert-CurrentModeRequest
-    Write-Host "TV Mode: переключаю звук на телек ($TvAudioName)..."
-    if (Test-Path $SoundVolumeView) {
-        & $SoundVolumeView /SetDefault $TvAudioName all
-    } else {
-        Write-Warning "SoundVolumeView не найден по пути $SoundVolumeView — звук не переключён. См. README."
-    }
-
-    Write-Host "TV Mode: включаю high-performance power plan..."
-    powercfg /setactive SCHEME_MIN
-
-    Write-Host "TV Mode: запускаю Steam Big Picture..."
-    Start-Process "steam://open/bigpicture"
-
-    Write-Host "TV Mode: включаю горячую клавишу Ctrl+Alt+P..."
-    $HotkeyListenerScript = Join-Path $PSScriptRoot "hotkey-listener.ps1"
-    $HotkeyListenerArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$HotkeyListenerScript`""
-    Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList $HotkeyListenerArguments
-
-    Write-Host "TV Mode: готово."
+} catch {
+    Write-ModeLog "TV Mode: ошибка: $_"
+    exit 1
 }
