@@ -1,0 +1,15 @@
+name: Windows PowerShell tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  modes:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression tests in Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/run.ps1
+      - name: Check task installation and rollback
+        shell: powershell
+        run: ./tests/installer.ps1

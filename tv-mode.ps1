@@ -1,86 +1,47 @@
-# ================================================================
-# TV Gaming Mode
-# Переключает картинку и звук на телек, запускает Steam Big Picture.
-# Этот скрипт запускается автоматически при входе в Windows.
-# ================================================================
-
-$StateDirectory = Join-Path $env:LOCALAPPDATA "steam-tv-mode"
-$PcModeMarker = Join-Path $StateDirectory "pc-mode.active"
-if (-not (Test-Path $StateDirectory)) {
-    New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
-}
-Remove-Item -LiteralPath $PcModeMarker -Force -ErrorAction SilentlyContinue
-
-# --- НАСТРОЙКИ (поменяй под себя) --------------------------------
-
-# Часть имени аудио-устройства ТВ.
-# Как узнать: правой кнопкой по иконке звука в трее -> "Звуки"
-# -> вкладка "Воспроизведение". Найди устройство телека, скопируй
-# кусок имени (например "Samsung" или "TV" или "AV Receiver").
+﻿# Имя или Item ID устройства воспроизведения в SoundVolumeView.
 $TvAudioName = "Samsung"
-
-# Путь к SoundVolumeView.exe (см. README, шаг про NirSoft).
-$SoundVolumeView = "C:\Tools\SoundVolumeView.exe"
-
-# Часть имени телевизора в списке дисплеев Windows.
-$TvDisplayName = "Samsung"
-
-# Максимум секунд ждать, пока Windows увидит телевизор.
 $TvDetectTimeoutSeconds = 120
 
-# -----------------------------------------------------------------
-
-Write-Host "TV Mode: ищу дисплей с именем '$TvDisplayName'..."
-$TvDetectionDeadline = (Get-Date).AddSeconds($TvDetectTimeoutSeconds)
-$TvDisplay = $null
-while (-not $TvDisplay -and (Get-Date) -lt $TvDetectionDeadline) {
-    $TvDisplay = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -ErrorAction SilentlyContinue |
-        Where-Object {
-            $FriendlyName = -join ($_.UserFriendlyName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ })
-            $ManufacturerName = -join ($_.ManufacturerName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ })
-            $ConfiguredNameMatches = "$FriendlyName $ManufacturerName" -like "*$TvDisplayName*"
-            $SamsungFallbackMatches = $FriendlyName -like "*Samsung*" -or $ManufacturerName -eq "SAM"
-            $_.Active -and ($ConfiguredNameMatches -or $SamsungFallbackMatches)
-        } |
-        Select-Object -First 1
-
-    if (-not $TvDisplay) {
+. (Join-Path $PSScriptRoot 'mode-common.ps1')
+try {
+    $request = New-ModeRequest TV
+    $displayId = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tv-display.id')).Trim()
+    if (-not $displayId) { throw 'Укажите телевизор с помощью install-task.ps1.' }
+    Write-ModeLog "TV Mode: ожидаю $displayId."
+    $deadline = (Get-Date).AddSeconds($TvDetectTimeoutSeconds)
+    do {
+        if (-not (Test-ModeRequest $request)) { return }
+        $tv = Get-TvMonitors | Where-Object { $_.InstanceName -eq $displayId }
+        if ($tv) { break }
+        if ((Get-Date) -ge $deadline) { throw "Телевизор не обнаружен за $TvDetectTimeoutSeconds с." }
         Start-Sleep -Seconds 2
-    }
-}
+    } while ($true)
 
-if (-not $TvDisplay) {
-    Write-Warning "TV Mode: дисплей '$TvDisplayName' или Samsung не найден за $TvDetectTimeoutSeconds сек. Настройки не изменены."
+    Invoke-ModeLock {
+        if (-not (Test-ModeRequest $request)) { return }
+        $listener = Join-Path $PSScriptRoot 'hotkey-listener.ps1'
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$listener`" $request"
+        [IO.File]::WriteAllText($ListenerFile, $request)
+        try {
+            Set-ModeDisplay external
+            $deadline = (Get-Date).AddSeconds(10)
+            do {
+                $active = @(Get-TvMonitors | Where-Object { $_.Active })
+                if ($active.Count -eq 1 -and $active[0].InstanceName -eq $displayId) { break }
+                if ((Get-Date) -ge $deadline) { throw 'Windows активировала другой дисплей.' }
+                Start-Sleep -Milliseconds 500
+            } while ($true)
+        } catch {
+            Set-ModeDisplay internal
+            [IO.File]::Delete($ListenerFile)
+            throw
+        }
+        Set-ModeAudio $TvAudioName
+        Enable-TvPowerPlan
+        Start-Process 'steam://open/bigpicture'
+        Write-ModeLog 'TV Mode: запрошен Steam Big Picture. Готово.'
+    }
+} catch {
+    Write-ModeLog "TV Mode: ошибка: $_"
     exit 1
 }
-
-$TvFriendlyName = -join ($TvDisplay.UserFriendlyName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ })
-Write-Host "TV Mode: найден дисплей '$TvFriendlyName'."
-
-Write-Host "TV Mode: переключаю дисплей на телек..."
-# /external = картинка только на телек
-# /extend   = расширить рабочий стол на телек
-# /clone    = дублировать
-# /internal = только монитор ПК
-& "$env:WINDIR\System32\DisplaySwitch.exe" /external
-Start-Sleep -Seconds 4
-
-Write-Host "TV Mode: переключаю звук на телек ($TvAudioName)..."
-if (Test-Path $SoundVolumeView) {
-    & $SoundVolumeView /SetDefault $TvAudioName all
-} else {
-    Write-Warning "SoundVolumeView не найден по пути $SoundVolumeView — звук не переключён. См. README."
-}
-
-Write-Host "TV Mode: включаю high-performance power plan..."
-powercfg /setactive SCHEME_MIN
-
-Write-Host "TV Mode: запускаю Steam Big Picture..."
-Start-Process "steam://open/bigpicture"
-
-Write-Host "TV Mode: включаю горячую клавишу Ctrl+Alt+P..."
-$HotkeyListenerScript = Join-Path $PSScriptRoot "hotkey-listener.ps1"
-$HotkeyListenerArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$HotkeyListenerScript`""
-Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList $HotkeyListenerArguments
-
-Write-Host "TV Mode: готово."
