@@ -147,12 +147,14 @@ function Wait-ForMonitorState {
                 return $Records
             }
         } catch {
+            $lastReadError = $_.Exception.Message
             # Список дисплеев может быть временно недоступен во время смены режима.
         }
 
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $Deadline)
 
+    if ($lastReadError) { Write-ModeLog "Последняя ошибка чтения дисплеев: $lastReadError" }
     return $null
 }
 
@@ -203,8 +205,17 @@ function Find-TvMonitor {
 function Get-DisplaySnapshot {
     param([Parameter(Mandatory = $true)][string]$StateDirectory)
 
-    $ConfigPath = Join-Path $StateDirectory "pc-displays.cfg"
-    $ManifestPath = Join-Path $StateDirectory "pc-displays.json"
+    $directory = Join-Path $StateDirectory 'pc-displays'
+    $legacyRestored = Join-Path $StateDirectory 'legacy-displays-restored'
+    if ([IO.File]::Exists($legacyRestored)) {
+        [IO.File]::Delete((Join-Path $StateDirectory 'pc-displays.cfg'))
+        [IO.File]::Delete((Join-Path $StateDirectory 'pc-displays.json'))
+        [IO.File]::Delete($legacyRestored)
+    }
+    $legacy = -not [IO.Directory]::Exists($directory)
+    if ($legacy) { $directory = $StateDirectory }
+    $ConfigPath = Join-Path $directory "pc-displays.cfg"
+    $ManifestPath = Join-Path $directory "pc-displays.json"
     $HasConfig = Test-Path -LiteralPath $ConfigPath -PathType Leaf
     $HasManifest = Test-Path -LiteralPath $ManifestPath -PathType Leaf
 
@@ -223,6 +234,7 @@ function Get-DisplaySnapshot {
     }
 
     return [pscustomobject]@{
+        Legacy = $legacy
         ConfigPath = $ConfigPath
         ManifestPath = $ManifestPath
         ActiveMonitorIds = $MonitorIds
@@ -242,19 +254,11 @@ function Save-PcDisplayConfiguration {
         New-Item -ItemType Directory -Path $StateDirectory -Force -ErrorAction Stop | Out-Null
     }
 
-    $ConfigPath = Join-Path $StateDirectory "pc-displays.cfg"
-    $ManifestPath = Join-Path $StateDirectory "pc-displays.json"
-    if ((Test-Path -LiteralPath $ConfigPath) -or (Test-Path -LiteralPath $ManifestPath)) {
-        throw "Нельзя перезаписать незавершённый снимок конфигурации дисплеев."
-    }
-
-    $Suffix = [guid]::NewGuid().ToString("N")
-    $TempConfigPath = Join-Path $StateDirectory ("pc-displays-" + $Suffix + ".tmp.cfg")
-    $TempManifestPath = Join-Path $StateDirectory ("pc-displays-" + $Suffix + ".tmp.json")
-    $SnapshotCommitted = $false
-    $ConfigPromoted = $false
-    $ManifestPromoted = $false
-
+    $directory = Join-Path $StateDirectory 'pc-displays'
+    $staging = Join-Path $StateDirectory ("pending-" + [guid]::NewGuid())
+    [IO.Directory]::CreateDirectory($staging) | Out-Null
+    $TempConfigPath = Join-Path $staging 'pc-displays.cfg'
+    $TempManifestPath = Join-Path $staging 'pc-displays.json'
     try {
         Invoke-MultiMonitorTool -ToolPath $ToolPath -Arguments @("/SaveConfig", $TempConfigPath)
         if (-not (Test-Path -LiteralPath $TempConfigPath -PathType Leaf) -or (Get-Item -LiteralPath $TempConfigPath -ErrorAction Stop).Length -eq 0) {
@@ -264,21 +268,10 @@ function Save-PcDisplayConfiguration {
         $Manifest = [pscustomobject]@{ ActiveMonitorIds = @($Records.MonitorId); Layout = @($Records | Select-Object MonitorId, X, Y, IsPrimary) }
         $Manifest | ConvertTo-Json -Compress | Set-Content -LiteralPath $TempManifestPath -Encoding UTF8 -ErrorAction Stop
 
-        Move-Item -LiteralPath $TempConfigPath -Destination $ConfigPath -ErrorAction Stop | Out-Null
-        $ConfigPromoted = $true
-        Move-Item -LiteralPath $TempManifestPath -Destination $ManifestPath -ErrorAction Stop | Out-Null
-        $ManifestPromoted = $true
-        $SnapshotCommitted = $true
+        [IO.Directory]::Move($staging, $directory)
     } finally {
-        Remove-Item -LiteralPath $TempConfigPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $TempManifestPath -Force -ErrorAction SilentlyContinue
-        if (-not $SnapshotCommitted) {
-            if ($ConfigPromoted) {
-                Remove-Item -LiteralPath $ConfigPath -Force -ErrorAction SilentlyContinue
-            }
-            if ($ManifestPromoted) {
-                Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue
-            }
+        if ([IO.Directory]::Exists($staging)) {
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -304,11 +297,20 @@ function Restore-SavedDisplayConfiguration {
             throw "После загрузки снимка активные дисплеи не совпали с исходной конфигурацией."
         }
 
-        Remove-Item -LiteralPath $Snapshot.ConfigPath -Force -ErrorAction Stop
-        Remove-Item -LiteralPath $Snapshot.ManifestPath -Force -ErrorAction Stop
+        if ($Snapshot.Legacy) {
+            $marker = Join-Path $StateDirectory 'legacy-displays-restored'
+            [IO.File]::WriteAllText($marker, '')
+            [IO.File]::Delete($Snapshot.ConfigPath)
+            [IO.File]::Delete($Snapshot.ManifestPath)
+            [IO.File]::Delete($marker)
+        } else {
+            $retired = Join-Path $StateDirectory ("restored-" + [guid]::NewGuid())
+            [IO.Directory]::Move((Split-Path $Snapshot.ConfigPath), $retired)
+            Remove-Item -LiteralPath $retired -Recurse -Force -ErrorAction SilentlyContinue
+        }
         return $true
     } catch {
-        Write-Warning "$($ModeName): не удалось восстановить дисплеи: $($_.Exception.Message)"
+        Write-ModeLog "$($ModeName): не удалось восстановить дисплеи: $($_.Exception.Message)"
         return $false
     }
 }
@@ -360,9 +362,9 @@ function Set-TvDisplayConfiguration {
         Write-Host "TV Mode: включён только телевизор '$($TvMonitor.MonitorName)'."
         return $true
     } catch {
-        Write-Warning "TV Mode: не удалось переключить дисплеи: $($_.Exception.Message)"
+        Write-ModeLog "TV Mode: не удалось переключить дисплеи: $($_.Exception.Message)"
         if ($SnapshotReady -and -not (Restore-SavedDisplayConfiguration -ToolPath $ToolPath -StateDirectory $StateDirectory -ModeName "TV Mode")) {
-            Write-Warning "TV Mode: откат не подтверждён; снимок дисплеев сохранён для повторного восстановления."
+            Write-ModeLog "TV Mode: откат не подтверждён; снимок дисплеев сохранён для повторного восстановления."
         }
         return $false
     }
@@ -378,7 +380,7 @@ function Restore-PcDisplayConfiguration {
     try {
         $Snapshot = Get-DisplaySnapshot -StateDirectory $StateDirectory
     } catch {
-        Write-Warning "PC Mode: не удалось прочитать снимок дисплеев: $($_.Exception.Message)"
+        Write-ModeLog "PC Mode: не удалось прочитать снимок дисплеев: $($_.Exception.Message)"
         return $false
     }
 
@@ -392,6 +394,6 @@ function Restore-PcDisplayConfiguration {
         [string]::IsNullOrWhiteSpace($_.MonitorName) -or
         $_.MonitorName.IndexOf($TvDisplayName, [StringComparison]::OrdinalIgnoreCase) -ge 0
     }).Count -eq 0) { return $true }
-    Write-Warning "Нет сохранённой раскладки. Выбери рабочие мониторы в параметрах экрана Windows."
+    Write-ModeLog "Нет сохранённой раскладки. Выбери рабочие мониторы в параметрах экрана Windows."
     return $false
 }

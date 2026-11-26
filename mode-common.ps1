@@ -50,7 +50,26 @@ function Invoke-ModeNative([string]$Program, [string[]]$Arguments) {
 
 . (Join-Path $PSScriptRoot 'display-mode.ps1')
 $MultiMonitorTool = Join-Path $PSScriptRoot 'MultiMonitorTool.exe'
+$SettingsPath = Join-Path $PSScriptRoot 'mode-settings.json'
+function Get-ModeSettings {
+    if ([IO.File]::Exists($SettingsPath)) {
+        Get-Content -LiteralPath $SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+}
+
+function Get-PlaybackDevices {
+    $csv = Join-Path ([IO.Path]::GetTempPath()) ("steam-audio-" + [guid]::NewGuid() + ".csv")
+    try {
+        $null = Invoke-ModeNative (Join-Path $PSScriptRoot 'SoundVolumeView.exe') @('/scomma', $csv, '/Columns', 'Type,Direction,Name,Device Name,Item ID')
+        Import-Csv -LiteralPath $csv | Where-Object { $_.Type -eq 'Device' -and $_.Direction -eq 'Render' -and $_.'Item ID' }
+    } finally {
+        [IO.File]::Delete($csv)
+    }
+}
+
 function Get-ConfiguredMonitorId {
+    $settings = Get-ModeSettings
+    if ($settings) { return $settings.MonitorId }
     $path = Join-Path $PSScriptRoot 'tv-display.id'
     if ([IO.File]::Exists($path)) { [IO.File]::ReadAllText($path).Trim() }
 }

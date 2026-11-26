@@ -9,6 +9,8 @@ $PcAudioName = "Realtek"
 
 . (Join-Path $PSScriptRoot 'mode-common.ps1')
 try {
+    $settings = Get-ModeSettings
+    if ($settings) { $PcAudioName = $settings.PcAudioId }
     $request = New-ModeRequest PC $ExpectedListener
     if (-not $request) { return }
     Invoke-ModeLock {
