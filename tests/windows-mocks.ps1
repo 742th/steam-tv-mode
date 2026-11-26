@@ -47,6 +47,7 @@ function Invoke-ModeNative {
             switch ($Arguments[0]) {
                 '/getactivescheme' { "Power Scheme GUID: $($fixture.Scheme) (fixture)" }
                 '/setactive' {
+                    if ($fixture.FailHigh -and $Arguments[1] -eq 'SCHEME_MIN') { throw 'power plan unavailable' }
                     $fixture.Scheme = if ($Arguments[1] -eq 'SCHEME_MIN') { $fixture.High } else { $Arguments[1] }
                 }
                 default { throw "Unexpected power command: $Arguments" }

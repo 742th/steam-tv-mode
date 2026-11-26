@@ -3,7 +3,9 @@
 [CmdletBinding()]
 param(
     [ValidateNotNullOrEmpty()]
-    [string]$TvDisplayId
+    [string]$TvDisplayId,
+    [string]$TvAudioId,
+    [string]$PcAudioId
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +17,7 @@ try {
         }
     }
 
-    . (Join-Path $PSScriptRoot 'display-mode.ps1')
+    . (Join-Path $PSScriptRoot 'mode-common.ps1')
     $displays = @(Get-MonitorRows -ToolPath (Join-Path $PSScriptRoot 'MultiMonitorTool.exe') |
         Where-Object { $_.Disconnected -ne 'Yes' -and $_.'Monitor ID' } | Sort-Object 'Monitor ID')
     if ($displays.Count -eq 0) {
@@ -41,6 +43,27 @@ try {
         $display = $displays[$index - 1]
     }
 
+    $devices = @(Get-PlaybackDevices)
+    if (-not $devices.Count) { throw 'SoundVolumeView не нашёл устройства воспроизведения.' }
+    function Select-AudioId([string]$Label, [string]$Id) {
+        if ($Id) {
+            if ($devices.'Item ID' -notcontains $Id) { throw "Нет аудиоустройства '$Id'." }
+            return $Id
+        }
+        for ($i = 0; $i -lt $devices.Count; $i++) {
+            Write-Host ('{0}. {1} ({2}) [{3}]' -f ($i + 1), $devices[$i].Name, $devices[$i].'Device Name', $devices[$i].'Item ID')
+        }
+        $index = 0
+        if (-not [int]::TryParse((Read-Host "Номер устройства для $Label"), [ref]$index) -or $index -lt 1 -or $index -gt $devices.Count) {
+            throw 'Некорректный номер аудиоустройства.'
+        }
+        return $devices[$index - 1].'Item ID'
+    }
+    $settingsJson = [ordered]@{
+        MonitorId = $display.'Monitor ID'
+        TvAudioId = Select-AudioId 'ТВ' $TvAudioId
+        PcAudioId = Select-AudioId 'ПК' $PcAudioId
+    } | ConvertTo-Json
     $scriptPath = Join-Path $PSScriptRoot 'tv-mode.ps1'
     $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $action = New-ScheduledTaskAction -Execute $powershell `
@@ -50,23 +73,31 @@ try {
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-    # Сохраняем прежний выбор ТВ на случай, если Планировщик отклонит новую задачу.
-    $idPath = Join-Path $PSScriptRoot 'tv-display.id'
-    $oldId = $null
-    if ([IO.File]::Exists($idPath)) {
-        $oldId = [IO.File]::ReadAllBytes($idPath)
-    }
-    Set-Content -LiteralPath $idPath -Value $display.'Monitor ID' -Encoding UTF8
+    $configPath = Join-Path $PSScriptRoot 'mode-settings.json'
+    $tempPath = "$configPath.$([guid]::NewGuid()).tmp"
+    $backupPath = "$tempPath.bak"
     try {
-        Register-ScheduledTask -TaskName 'TV Gaming Mode' -Action $action -Trigger $trigger `
-            -Principal $principal -Settings $settings -Force | Out-Null
-    } catch {
-        if ($null -ne $oldId) {
-            [IO.File]::WriteAllBytes($idPath, $oldId)
+        [IO.File]::WriteAllText($tempPath, $settingsJson)
+        if ([IO.File]::Exists($configPath)) {
+            [IO.File]::Replace($tempPath, $configPath, $backupPath)
         } else {
-            Remove-Item -LiteralPath $idPath
+            [IO.File]::Move($tempPath, $configPath)
         }
-        throw
+        try {
+            Register-ScheduledTask -TaskName 'TV Gaming Mode' -Action $action -Trigger $trigger `
+                -Principal $principal -Settings $settings -Force | Out-Null
+        } catch {
+            if ([IO.File]::Exists($backupPath)) {
+                [IO.File]::Copy($backupPath, $configPath, $true)
+                [IO.File]::Delete($backupPath)
+            } else {
+                [IO.File]::Delete($configPath)
+            }
+            throw
+        }
+        [IO.File]::Delete($backupPath)
+    } finally {
+        [IO.File]::Delete($tempPath)
     }
 
     Write-Host "Готово. Задача 'TV Gaming Mode' зарегистрирована для $user."

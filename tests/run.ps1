@@ -65,6 +65,26 @@ try {
     Assert-True (-not $fixture.Calls.Contains('steam://open/bigpicture')) 'Steam opened on the wrong monitor'
     $fixture.WrongTopology = $false
 
+    # An interrupted staging directory is invisible. Published snapshots are retired together.
+    $state = Join-Path $temp 'steam-tv-mode'
+    $orphan = [IO.Directory]::CreateDirectory((Join-Path $state 'pending-interrupted'))
+    [IO.File]::WriteAllText((Join-Path $orphan.FullName 'pc-displays.cfg'), 'partial')
+    $fixture.FailHigh = $true
+    $fixture.Calls.Clear()
+    @{ MonitorId = $fixture.Id; TvAudioId = 'tv-configured'; PcAudioId = 'pc-configured' } |
+        ConvertTo-Json | Set-Content (Join-Path $temp 'mode-settings.json') -Encoding UTF8
+    & $tv
+    Assert-True ($fixture.Audio -eq 'id-tv-configured') 'TV ignored configured audio'
+    Assert-True ($fixture.Calls.Contains('steam://open/bigpicture')) 'Power failure blocked Steam'
+    Assert-True (Test-Path (Join-Path $state 'pc-displays/pc-displays.cfg')) 'Snapshot was not published'
+    & $pc
+    Assert-True ($fixture.Audio -eq 'id-pc-configured') 'PC ignored configured audio'
+    Assert-True (-not (Test-Path (Join-Path $state 'pc-displays'))) 'Snapshot was not retired'
+    $fixture.FailHigh = $false
+    $log = Get-Content (Join-Path $state 'mode.log') -Raw
+    Assert-True ($log.Contains('power plan unavailable')) 'Lost power failure detail'
+    Assert-True ($log.Contains('После отключения остальных экранов')) 'Lost topology failure detail'
+
     # A missing audio tool must report failure while still restoring the power plan.
     & $tv
     Remove-Item -LiteralPath (Join-Path $temp 'SoundVolumeView.exe')

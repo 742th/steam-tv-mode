@@ -11,6 +11,8 @@ $TvDetectTimeoutSeconds = 120
 . (Join-Path $PSScriptRoot 'mode-common.ps1')
 try {
     # Пока ищем телевизор, пользователь может отменить переход, запустив PC Mode.
+    $settings = Get-ModeSettings
+    if ($settings) { $TvAudioName = $settings.TvAudioId }
     $request = New-ModeRequest TV
     $tv = Find-TvMonitor -ToolPath $MultiMonitorTool -TvDisplayName $TvDisplayName -MonitorId (Get-ConfiguredMonitorId) -TimeoutSeconds $TvDetectTimeoutSeconds -RequestToken $request
     if (-not $tv) { return }
@@ -26,11 +28,11 @@ try {
                 throw 'Не удалось включить только выбранный телевизор.'
             }
         } catch {
-            if (-not (Test-Path (Join-Path $StateDirectory 'pc-displays.cfg'))) { [IO.File]::Delete($ListenerFile) }
+            if (-not ((Test-Path (Join-Path $StateDirectory 'pc-displays')) -or (Test-Path (Join-Path $StateDirectory 'pc-displays.cfg')))) { [IO.File]::Delete($ListenerFile) }
             throw
         }
         Set-ModeAudio $TvAudioName
-        Enable-TvPowerPlan
+        try { Enable-TvPowerPlan } catch { Write-ModeLog "TV Mode: не удалось включить план питания: $_" }
         Start-Process 'steam://open/bigpicture'
         Write-ModeLog 'TV Mode: запрошен Steam Big Picture. Готово.'
     }
